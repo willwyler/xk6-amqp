@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/dop251/goja"
+	"github.com/dop251/goja_nodejs/eventloop"
 	amqpDriver "github.com/rabbitmq/amqp091-go"
 	"github.com/vmihailenco/msgpack/v5"
 	"go.k6.io/k6/js/modules"
@@ -19,6 +21,7 @@ type AMQP struct {
 	Connection *amqpDriver.Connection
 	Queue      *Queue
 	Exchange   *Exchange
+	EventLoop  *eventloop.EventLoop
 }
 
 // Options defines configuration options for an AMQP session.
@@ -71,6 +74,14 @@ func (amqp *AMQP) Start(options Options) error {
 	amqp.Connection = conn
 	amqp.Queue.Connection = conn
 	amqp.Exchange.Connection = conn
+
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	amqp.EventLoop.Start()
+
 	return err
 }
 
@@ -139,28 +150,40 @@ func (amqp *AMQP) Listen(options ListenOptions) error {
 	}
 
 	go func() {
-		for {
-			select {
-			case m := <-msgs:
-				if len(m.Body) != 0 {
+		for m := range msgs {
+			if len(m.Body) != 0 {
+				amqp.EventLoop.RunOnLoop(func(vm *goja.Runtime) {
+					fmt.Println("We are listening to message")
 					err = options.Listener((string(m.Body)))
+					fmt.Println("We listened to the message")
 					if err != nil {
 						fmt.Println(err)
 					}
-				}
+				})
 			}
 		}
 	}()
 	return err
 }
 
+func (amqp *AMQP) MessagesLeftOnQueue(queueName string) int {
+	ch, _ := amqp.Connection.Channel()
+
+	q, _ := ch.QueueInspect(queueName)
+
+	return q.Messages
+}
+
 func init() {
 	queue := Queue{}
 	exchange := Exchange{}
+	loop := eventloop.NewEventLoop(eventloop.EnableConsole(true))
+
 	generalAMQP := AMQP{
-		Version:  version,
-		Queue:    &queue,
-		Exchange: &exchange,
+		Version:   version,
+		Queue:     &queue,
+		Exchange:  &exchange,
+		EventLoop: loop,
 	}
 
 	modules.Register("k6/x/amqp", &generalAMQP)
